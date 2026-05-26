@@ -118,7 +118,18 @@ export default function App() {
       const { fetchFile, toBlobURL } = await import('@ffmpeg/util')
       const ffmpeg = new FFmpeg()
 
+      // Show progress in the step
+      ffmpeg.on('progress', ({ progress }: { progress: number }) => {
+        const pct = Math.round(progress * 100)
+        setSteps(prev => prev.map(s =>
+          s.id === 'cut' && s.status === 'active'
+            ? { ...s, title: `Cutting clips... ${pct}%` }
+            : s
+        ))
+      })
+
       const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd'
+      setSteps(prev => prev.map(s => s.id === 'load' ? { ...s, title: 'Loading FFmpeg engine (first time ~15s)...' } : s))
       await ffmpeg.load({
         coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
         wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
@@ -173,10 +184,12 @@ export default function App() {
 
         if (wantReframe && (plat.w !== 1920 || plat.h !== 1080)) {
           if (plat.w === plat.h) {
-            const cropSize = 1080
-            ffArgs.push('-vf', `crop=${cropSize}:${cropSize}:(iw-${cropSize})/2:(ih-${cropSize})/2,scale=${plat.w}:${plat.h}`)
+            // Square 1:1 — crop center square from 16:9
+            ffArgs.push('-vf', `crop=ih:ih:(iw-ih)/2:0,scale=${plat.w}:${plat.h}`)
           } else if (plat.h > plat.w) {
-            ffArgs.push('-vf', `scale=${plat.w}:-2,pad=${plat.w}:${plat.h}:(ow-iw)/2:(oh-ih)/2`)
+            // Vertical 9:16 — scale so height fills frame, crop width to center
+            // For 1920x1080 source: scale height to 1920, width becomes 3413, crop center 1080
+            ffArgs.push('-vf', `scale=-2:${plat.h},crop=${plat.w}:${plat.h}:(iw-${plat.w})/2:0`)
           }
         }
 
@@ -184,8 +197,8 @@ export default function App() {
 
         await ffmpeg.exec(ffArgs)
         const rawData = await ffmpeg.readFile(outFile)
-        const uint8Data = rawData instanceof Uint8Array ? rawData : new Uint8Array(rawData as ArrayBuffer)
-        const blob = new Blob([uint8Data], { type: 'video/mp4' })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const blob = new Blob([rawData as any], { type: 'video/mp4' })
         const url = URL.createObjectURL(blob)
         const sizeMB = (blob.size / 1024 / 1024).toFixed(1) + ' MB'
 
