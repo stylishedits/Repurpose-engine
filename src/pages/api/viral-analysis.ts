@@ -77,7 +77,7 @@ Generate 6-8 clips covering different parts of the video. Make startTime/endTime
     const data = await response.json()
     let text = ''
     if (data.content) {
-      data.content.forEach((block: any) => {
+      data.content.forEach((block: { type: string; text?: string }) => {
         if (block.type === 'text') text += block.text
       })
     }

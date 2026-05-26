@@ -21,7 +21,7 @@ const PLANS = [
   },
   {
     name: 'Pro', price: '19', cycle: 'per month', featured: true,
-    paypalPlanId: process.env.NEXT_PUBLIC_PAYPAL_PRO_PLAN_ID,
+    paypalPlanId: process.env.NEXT_PUBLIC_PAYPAL_PRO_PLAN_ID || 'PRO_PLAN_ID',
     features: [
       { t: 'Unlimited videos', ok: true },
       { t: 'All 7 platform formats', ok: true },
@@ -35,7 +35,7 @@ const PLANS = [
   },
   {
     name: 'Agency', price: '79', cycle: 'per month', featured: false,
-    paypalPlanId: process.env.NEXT_PUBLIC_PAYPAL_AGENCY_PLAN_ID,
+    paypalPlanId: process.env.NEXT_PUBLIC_PAYPAL_AGENCY_PLAN_ID || 'AGENCY_PLAN_ID',
     features: [
       { t: 'Everything in Pro', ok: true },
       { t: '10 team seats', ok: true },
