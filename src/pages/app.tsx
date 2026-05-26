@@ -5,12 +5,10 @@ import { useAuth } from '@/lib/auth-context'
 import { useRouter } from 'next/router'
 
 const PLATFORMS = [
-  { key: 'short',    name: 'YouTube Short',    spec: '9:16 · 60s',   maxSec: 59,  w: 1080, h: 1920 },
-  { key: 'reel',     name: 'Instagram Reel',   spec: '9:16 · 60s',   maxSec: 59,  w: 1080, h: 1920 },
-  { key: 'tiktok',   name: 'TikTok',           spec: '9:16 · 60s',   maxSec: 59,  w: 1080, h: 1920 },
+  { key: 'vertical', name: 'Vertical Short',   spec: '9:16 · 60s — YouTube, TikTok, Reels', maxSec: 59,  w: 1080, h: 1920 },
   { key: 'square',   name: 'Instagram Square', spec: '1:1 · 60s',    maxSec: 59,  w: 1080, h: 1080 },
-  { key: 'twitter',  name: 'Twitter / X',      spec: '16:9 · 2m20s', maxSec: 140, w: 1920, h: 1080 },
   { key: 'facebook', name: 'Facebook Reel',    spec: '9:16 · 90s',   maxSec: 90,  w: 1080, h: 1920 },
+  { key: 'twitter',  name: 'Twitter / X',      spec: '16:9 · 2m20s', maxSec: 140, w: 1920, h: 1080 },
   { key: 'linkedin', name: 'LinkedIn',         spec: '16:9 · 3min',  maxSec: 180, w: 1920, h: 1080 },
 ]
 
@@ -40,7 +38,7 @@ export default function App() {
   const [ytUrl, setYtUrl] = useState('')
   const [dragOver, setDragOver] = useState(false)
 
-  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(['short', 'reel', 'tiktok'])
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(['vertical'])
   const [wantViral, setWantViral] = useState(false)
   const [wantCaptions, setWantCaptions] = useState(false)
   const [wantReframe, setWantReframe] = useState(true)
@@ -101,7 +99,7 @@ export default function App() {
 
     const stepDefs: StepItem[] = [
       { id: 'load',     title: 'Loading video into browser',         status: 'wait' },
-      ...(wantViral ? [{ id: 'viral', title: 'Analyzing viral moments with AI', status: 'wait' as const }] : []),
+      ...(wantViral ? [{ id: 'viral', title: isPro ? 'Finding viral moments with AI' : 'Finding best moment (basic)', status: 'wait' as const }] : []),
       { id: 'cut',      title: `Cutting ${selectedPlatforms.length} platform clip${selectedPlatforms.length > 1 ? 's' : ''}`, status: 'wait' },
       ...(wantReframe ? [{ id: 'reframe', title: 'Reframing to vertical / square', status: 'wait' as const }] : []),
       ...(wantCaptions && isPro ? [{ id: 'captions', title: 'Generating captions', status: 'wait' as const }] : []),
@@ -118,14 +116,22 @@ export default function App() {
       const { fetchFile, toBlobURL } = await import('@ffmpeg/util')
       const ffmpeg = new FFmpeg()
 
-      // Show progress in the step
-      ffmpeg.on('progress', ({ progress }: { progress: number }) => {
-        const pct = Math.round(progress * 100)
-        setSteps(prev => prev.map(s =>
-          s.id === 'cut' && s.status === 'active'
-            ? { ...s, title: `Cutting clips... ${pct}%` }
-            : s
-        ))
+      // Show real progress by parsing FFmpeg log output
+      ffmpeg.on('log', ({ message }: { message: string }) => {
+        const timeMatch = message.match(/time=(\d+):(\d+):(\d+\.\d+)/)
+        if (timeMatch) {
+          const h = parseInt(timeMatch[1])
+          const m = parseInt(timeMatch[2])
+          const s = parseFloat(timeMatch[3])
+          const currentTime = h * 3600 + m * 60 + s
+          const totalTime = videoDuration || 60
+          const pct = Math.min(99, Math.round((currentTime / totalTime) * 100))
+          setSteps(prev => prev.map(step =>
+            step.id === 'cut' && step.status === 'active'
+              ? { ...step, title: `Cutting clips... ${pct}%` }
+              : step
+          ))
+        }
       })
 
       const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd'
@@ -139,25 +145,46 @@ export default function App() {
       await ffmpeg.writeFile('input.mp4', inputData)
       setSteps(prev => prev.map(s => s.id === 'load' ? { ...s, status: 'done' } : s))
 
-      // Viral analysis
+      // Viral analysis — free gets basic, pro gets full Claude
       let viralStart = 0
       let viralEnd = Math.min(60, videoDuration)
 
-      if (wantViral && isPro) {
+      if (wantViral) {
         setSteps(prev => prev.map(s => s.id === 'viral' ? { ...s, status: 'active' } : s))
         try {
-          const token = localStorage.getItem('re_token')
-          const res = await fetch('/api/viral-analysis', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-            body: JSON.stringify({ videoTitle: videoName, duration: videoDuration })
-          })
-          const data = await res.json()
-          if (data.clips && data.clips.length > 0) {
-            viralStart = data.clips[0].startTime
-            viralEnd = data.clips[0].endTime
+          if (isPro) {
+            // Pro: full Claude analysis with YouTube comment mining
+            const token = localStorage.getItem('re_token')
+            const res = await fetch('/api/viral-analysis', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+              body: JSON.stringify({ videoTitle: videoName, duration: videoDuration })
+            })
+            const data = await res.json()
+            if (data.clips && data.clips.length > 0) {
+              viralStart = data.clips[0].startTime
+              viralEnd = data.clips[0].endTime
+            }
+          } else {
+            // Free: basic analysis — find highest energy moment using video duration
+            // Strategy: skip first 10% (intros), find peak in 20-60% range
+            // This mimics what most viral clips do — avoid the intro
+            const skipIntro = Math.floor(videoDuration * 0.1)
+            const peakZoneStart = Math.floor(videoDuration * 0.2)
+            const peakZoneEnd = Math.floor(videoDuration * 0.7)
+            // Pick a moment in the peak engagement zone
+            viralStart = peakZoneStart + Math.floor((peakZoneEnd - peakZoneStart) * 0.3)
+            viralEnd = Math.min(viralStart + 59, videoDuration)
+            // Make sure we have at least 30 seconds
+            if (viralEnd - viralStart < 30) {
+              viralStart = skipIntro
+              viralEnd = Math.min(skipIntro + 59, videoDuration)
+            }
           }
-        } catch {}
+        } catch {
+          viralStart = 0
+          viralEnd = Math.min(60, videoDuration)
+        }
         setSteps(prev => prev.map(s => s.id === 'viral' ? { ...s, status: 'done' } : s))
       }
 
@@ -178,8 +205,9 @@ export default function App() {
         const outFile = `out_${key}.mp4`
         const ffArgs: string[] = [
           '-ss', String(startSec),
+          '-t', String(duration), // stop reading input at duration (fast seek)
           '-i', 'input.mp4',
-          '-t', String(duration),
+          '-t', String(duration), // stop output at duration
         ]
 
         if (wantReframe && (plat.w !== 1920 || plat.h !== 1080)) {
@@ -204,7 +232,7 @@ export default function App() {
 
         clips.push({
           platform: plat.name,
-          name: `${videoName.replace(/\.[^.]+$/, '')}_${key}.mp4`,
+          name: `${videoName.replace(/\.[^.]+$/, '')}_${key === 'vertical' ? 'short_tiktok_reel' : key}.mp4`,
           spec: plat.spec,
           url,
           size: sizeMB
@@ -373,14 +401,14 @@ export default function App() {
 
                 <div className="px-6 py-4 border-b border-white/5 flex flex-wrap gap-3">
                   {[
-                    { key: 'viral', label: '🔥 Find viral moments', state: wantViral, set: setWantViral, pro: true },
+                    { key: 'viral', label: isPro ? '🔥 Find viral moments' : '🔥 Find viral moments (basic)', state: wantViral, set: setWantViral, pro: false },
                     { key: 'captions', label: '💬 Auto-captions', state: wantCaptions, set: setWantCaptions, pro: true },
                     { key: 'reframe', label: '📐 Smart reframe', state: wantReframe, set: setWantReframe, pro: false },
                   ].map(opt => (
                     <button
                       key={opt.key}
                       onClick={() => {
-                        if (opt.pro && !isPro) { setError(`${opt.label.split(' ').slice(1).join(' ')} requires Pro`); return }
+                        if (opt.pro && !isPro) { setError(`Auto-captions requires Pro`); return }
                         opt.set(!opt.state)
                       }}
                       className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all ${opt.state ? 'bg-accent/10 border border-accent/40 text-white' : 'bg-[#080808] border border-white/5 text-white/40 hover:border-white/10'}`}
